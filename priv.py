@@ -1,6 +1,3 @@
-"""
-03/01/2022
-"""
 from collections import ChainMap
 import types
 from typing import Any, Callable
