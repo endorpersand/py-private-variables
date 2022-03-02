@@ -76,7 +76,7 @@ class _ScopeVariables:
     def __init__(self, accessor, dct: dict):
         def _get(it):
             o = dct[it]
-            if isinstance(o, privatemethod):
+            if isinstance(o, PrivateMethod):
                 return o.__func__.__get__(accessor, type(accessor))
             return o
         object.__setattr__(self, "_get", _get)
@@ -152,8 +152,9 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
                 return f(*args, **nkwargs)
             return type(o)(func)
 
-        elif isinstance(o, privatemethod):
-            scope._register_default(o.__func__.__name__, o)
+        elif isinstance(o, PrivateMethod):
+            if o._name is None: raise ValueError("Could not resolve privatemethod's name")
+            scope._register_default(o._name, o)
             return _PrivateSentinel()
 
         # does not work on properties
@@ -171,21 +172,40 @@ class ScopedMeta(type):
     """
     def __new__(cls, clsname, bases, attrs, *, scope = None, name="pself"):
         if scope is None: scope = Scope()
+
         dec = bind_scope(scope, name, check_valid=False, implicit_drop=True)
+        nattrs = {}
+        for k, a in attrs.items():
+            if isinstance(a, PrivateMethod):
+                scope._register_default(k, a)
+                continue
 
-        attrs = {k: v for k, a in attrs.items() if not isinstance(v := dec(a), _PrivateSentinel)}
-        return super(ScopedMeta, cls).__new__(cls, clsname, bases, attrs)
+            d = dec(a)
+            if not isinstance(d, _PrivateSentinel): nattrs[k] = d
+        return super(ScopedMeta, cls).__new__(cls, clsname, bases, nattrs)
 
-class privatemethod:
-    def __new__(cls, scope_or_function: "Scope | Callable" = None, *args, **kwargs):
-        if isinstance(scope_or_function, Scope):
-            def decorator(fn: Callable):
-                scope_or_function._register_default(fn.__name__, cls(fn))
-            return decorator
-        return super().__new__(cls)
-    
-    def __init__(self, fn: Callable):
+class PrivateMethod:
+    def __init__(self, fn: "Callable | classmethod | staticmethod | property"):
         self.__func__ = fn
-    
+
+    @property
+    def _name(self):
+        fn = self.__func__
+        if hasattr(fn, "__func__"): return fn.__func__.__name__
+        if hasattr(fn, "fget"): return fn.fget.__name__
+        return fn.__name__
+
     def __get__(self, obj, objtype=None):
         raise TypeError("Cannot use privatemethod outside of scoped classes")
+
+# @privatemethod
+# @privatemethod(scope)
+def privatemethod(scope_or_function: "Scope | Callable" = None):
+    if isinstance(scope_or_function, Scope):
+        def decorator(fn: "Callable | classmethod | staticmethod | property"):
+            pm = PrivateMethod(fn)
+            scope_or_function._register_method(pm._name, pm)
+            return # it's been registered, destroy the attribute
+        return decorator
+    
+    return PrivateMethod(scope_or_function)
