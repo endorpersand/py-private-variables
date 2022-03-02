@@ -27,6 +27,15 @@ with priv.Scope() as s:
         def increment(self, *, pself):
             if pself.mutable: pself.count += 1
             return pself.count
+        
+        @priv.bind_scope(s)
+        @priv.privatemethod
+        def x(self):
+            print("hello")
+
+        @priv.bind_scope(s)
+        def expose(self, *, pself):
+            return pself
     
 class Ticker3(metaclass=priv.ScopedMeta):
     def __init__(self, *, pself):
@@ -39,3 +48,11 @@ class Ticker3(metaclass=priv.ScopedMeta):
     def increment(self, *, pself):
         if pself.mutable: pself.count += 1
         return pself.count
+    
+    @priv.privatemethod
+    @classmethod
+    def x(cls):
+        print(cls, "hello")
+    
+    def expose(self, *, pself):
+        return pself

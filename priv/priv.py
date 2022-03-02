@@ -3,7 +3,7 @@
 """
 from collections import ChainMap
 import types
-from typing import Any
+from typing import Any, Callable
 import inspect
 
 __all__ = ('Scope', 'bind_scope', 'ScopedMeta', 'privatemethod')
@@ -20,18 +20,21 @@ class Scope:
             nonlocal _open
             _open = False
         self.close = _close
-
         if values is None: values = {}
         if static is None: static = {}
         _access = {}
-        self._make_oa = lambda: OpenAccess(_access, values, static) if _open else None
 
-    # references instance of values that is always open
-    def access(self):
-        if self.is_open():
-            return self._make_oa()
-        
-        raise TypeError("Cannot access a closed scope")
+        # references instance of values that is always open
+        self.access = lambda: self._require_open() and OpenAccess(_access, values, static)
+        def _register_default(k: str, v):
+            self._require_open()
+            values[k] = v
+        self._register_default = _register_default
+
+    def _require_open(self):
+        if not self.is_open():
+            raise TypeError("Cannot access a closed scope")
+        return True
 
     def __getitem__(self, k):
         return getattr(self.access()(None), k)
@@ -57,20 +60,26 @@ class OpenAccess:
     def __init__(self, _access: dict[int, dict], values: dict[str, Any], static: dict[str, Any]):
         _base = ChainMap(static)
         
-        def make_chain_map(accessor):
+        def make_vars(accessor):
             if accessor is None: return _base
-            return _access.setdefault(id(accessor), _base.new_child(values))
-        self._chain_map = make_chain_map
+            cm = _base.new_child(values)
+            return _access.setdefault(id(accessor), _ScopeVariables(accessor, cm))
+        self._vars = make_vars
     
     def __call__(self, accessor):
-        return _DictWrapper(self._chain_map(accessor))
+        return self._vars(accessor)
 
-class _DictWrapper:
+class _ScopeVariables:
     """
     Converts __getattribute__ and __setattribute__ calls to __getitem__ and __setitem__
     """
-    def __init__(self, dct: dict):
-        object.__setattr__(self, "_get", lambda it: dct[it])
+    def __init__(self, accessor, dct: dict):
+        def _get(it):
+            o = dct[it]
+            if isinstance(o, privatemethod):
+                return o.__func__.__get__(accessor, type(accessor))
+            return o
+        object.__setattr__(self, "_get", _get)
 
         def _set(it, v):
             dct[it] = v
@@ -107,7 +116,14 @@ def kw_in_signature(f, name):
     except TypeError:
         return False
     return True
-    
+
+class _PrivateSentinel:
+    def __repr__(self): return "PRIVATE"
+
+    def __set_name__(self, o, name):
+        self.attr = name
+    def __get__(self, obj, objtype=None): raise AttributeError(f"'{objtype.__name__}' object has no attribute '{self.attr}'")
+
 # enable pself for the method
 def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implicit_drop = False):
     """
@@ -136,6 +152,10 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
                 return f(*args, **nkwargs)
             return type(o)(func)
 
+        elif isinstance(o, privatemethod):
+            scope._register_default(o.__func__.__name__, o)
+            return _PrivateSentinel()
+
         # does not work on properties
         elif check_valid:
             raise TypeError("Cannot bind scope here")
@@ -153,5 +173,19 @@ class ScopedMeta(type):
         if scope is None: scope = Scope()
         dec = bind_scope(scope, name, check_valid=False, implicit_drop=True)
 
-        attrs = {k: dec(a) for k, a in attrs.items()}
+        attrs = {k: v for k, a in attrs.items() if not isinstance(v := dec(a), _PrivateSentinel)}
         return super(ScopedMeta, cls).__new__(cls, clsname, bases, attrs)
+
+class privatemethod:
+    def __new__(cls, scope_or_function: "Scope | Callable" = None, *args, **kwargs):
+        if isinstance(scope_or_function, Scope):
+            def decorator(fn: Callable):
+                scope_or_function._register_default(fn.__name__, cls(fn))
+            return decorator
+        return super().__new__(cls)
+    
+    def __init__(self, fn: Callable):
+        self.__func__ = fn
+    
+    def __get__(self, obj, objtype=None):
+        raise TypeError("Cannot use privatemethod outside of scoped classes")
