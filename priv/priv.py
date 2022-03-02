@@ -77,7 +77,7 @@ class _ScopeVariables:
         def _get(it):
             o = dct[it]
             if isinstance(o, PrivateMethod):
-                return o.__func__.__get__(accessor, type(accessor))
+                return _override_kw(o.__func__.__get__(accessor, type(accessor)), pself=self)
             return o
         object.__setattr__(self, "_get", _get)
 
@@ -117,6 +117,17 @@ def kw_in_signature(f, name):
         return False
     return True
 
+def _override_kw(fn, **kwargs):
+    """
+    Creates a function (that isn't a partial) that has overridden some kwargs
+    """
+    if all(kw_in_signature(fn, k) for k in kwargs):
+        def func(*args, **kw):
+            nkwargs = {**kw, **kwargs}
+            return fn(*args, **nkwargs)
+        return func
+    return fn
+
 class _PrivateSentinel:
     def __repr__(self): return "PRIVATE"
 
@@ -134,8 +145,9 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
     def decorator(o):
         if isinstance(o, types.FunctionType):
             f = o
-            if implicit_drop and not kw_in_signature(f, name):
-                return o
+            if not kw_in_signature(f, name):
+                if implicit_drop: return o
+                else: raise TypeError(f"Function does not provide {name} parameter to override")
             def func(self, *args, **kwargs):
                 values = oa(self)
                 nkwargs = {**kwargs, name: values}
@@ -144,8 +156,9 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
 
         elif isinstance(o, (classmethod, staticmethod)):
             f = o.__func__
-            if implicit_drop and not kw_in_signature(f, name):
-                return o
+            if not kw_in_signature(f, name):
+                if implicit_drop: return o
+                else: raise TypeError(f"Function does not provide {name} parameter to override")
             def func(*args, **kwargs):
                 values = oa(None)
                 nkwargs = {**kwargs, name: values}
@@ -157,7 +170,24 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
             scope._register_default(o._name, o)
             return _PrivateSentinel()
 
-        # does not work on properties
+        elif isinstance(o, property):
+            np = [o.fget, o.fset, o.fdel, o.__doc__]
+            def a(i):
+                f = np[i]
+                if f is None: return
+                if hasattr(f, "scoped"): return
+                if not kw_in_signature(f, name):
+                    if implicit_drop: return
+                    else: raise TypeError(f"Function does not provide {name} parameter to override")
+                
+                def func(self, *args, **kwargs):
+                    values = oa(self)
+                    nkwargs = {**kwargs, name: values}
+                    return f(self, *args, **nkwargs)
+                np[i] = func
+            for i in range(3): a(i)
+            return property(*np)
+
         elif check_valid:
             raise TypeError("Cannot bind scope here")
 
