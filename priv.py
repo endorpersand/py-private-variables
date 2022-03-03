@@ -1,6 +1,6 @@
 from collections import ChainMap
 import types
-from typing import Any, Callable, Union
+from typing import Any, Union
 import inspect
 
 __all__ = ('Scope', 'bind_scope', 'ScopedMeta', 'privatemethod')
@@ -28,7 +28,7 @@ class Scope:
             self._require_open()
             fields[k] = v
 
-        bind = bind_scope(self)
+        bind = bind_scope(self, implicit_drop=True)
         def _register_pmethod(fn: PythonMethod, name: str = None):
             self._require_open()
             p = PrivateMethod(bind(fn))
@@ -85,10 +85,18 @@ class _ScopeVariables:
         object.__setattr__(self, "_get", _get)
 
         def _set(it, v):
+            o = dct.get(it, None)
+            print(o)
+            if isinstance(o, PrivateMethod) and (s := getattr(o.__func__, "__set__")) is not None:
+                return s(accessor, v)
             dct[it] = v
+
         object.__setattr__(self, "_set", _set)
 
         def _del(it):
+            o = dct.get(it, None)
+            if isinstance(o, PrivateMethod) and (d := getattr(o.__func__, "__delete__")) is not None:
+                return d(accessor)
             del dct[it]
         object.__setattr__(self, "_del", _del)
     
@@ -240,12 +248,27 @@ class PrivateMethod:
         if hasattr(fn, "fget"): return fn.fget.__name__
         if hasattr(fn, "__name__"): return fn.__name__
 
+class PrivateProperty(PrivateMethod):
+    def getter(self, fget):
+        p = self.__func__
+        return PrivateProperty(property(fget, p.fset, p.fdel, p.__doc__))
+    def setter(self, fset):
+        p = self.__func__
+        return PrivateProperty(property(p.fget, fset, p.fdel, p.__doc__))
+    def deleter(self, fdel):
+        p = self.__func__
+        return PrivateProperty(property(p.fget, p.fset, fdel, p.__doc__))
+
 # @privatemethod
 # @privatemethod(scope)
-def privatemethod(scope_or_function: "Scope | Callable" = None):
+def privatemethod(scope_or_function: "Scope | PythonMethod" = None):
     if isinstance(scope_or_function, Scope):
         def decorator(fn: PythonMethod):
             scope_or_function._register_pmethod(fn)
             return _PrivateSentinel()
         return decorator
+
+    if isinstance(scope_or_function, property):
+        return PrivateProperty(scope_or_function)
+
     return PrivateMethod(scope_or_function)
