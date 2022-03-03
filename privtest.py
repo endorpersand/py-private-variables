@@ -1,47 +1,9 @@
 import priv
-import doctest
+import unittest
 
 class Ticker:
     """
     Example of a ticker without private variables.
-
-    Everything works as intended. We can increment the ticker.
-    >>> t = Ticker()
-    >>> t.increment()
-    1
-    >>> t.increment()
-    2
-
-    Properties work.
-    >>> t.double_count
-    4
-
-    The global ticker works.
-    >>> u = Ticker()
-    >>> u.increment()
-    1
-    >>> u.global_count()
-    3
-
-    Lock & unlock mechanics!
-    >>> u.unlock()
-    Traceback (most recent call last):
-        ...
-    ValueError: Ticker is not locked!
-    >>> u.lock()
-    >>> u.unlock()
-    >>> u.global_count()
-    2
-    >>> u.double_count
-    0
-
-    But hidden variables are still accessible! We can edit them!
-    >>> t._count = 999
-    >>> t._mutable = False
-    >>> t.unlock()
-    >>> t.global_count()
-    -997
-    >>> t._rm_from_global()
     """
     _global_count = 0
 
@@ -80,56 +42,7 @@ class Ticker:
 class Ticker2(metaclass=priv.ScopedMeta, scope=priv.Scope(static={"global_count": 0})):
     """
     Example of a ticker with private variables (using `priv.ScopedMeta`).
-
-    Everything works as intended. We can increment the ticker.
-    >>> t = Ticker2()
-    >>> t.increment()
-    1
-    >>> t.increment()
-    2
-
-    Properties work.
-    >>> t.double_count
-    4
-
-    The global ticker works.
-    >>> u = Ticker2()
-    >>> u.increment()
-    1
-    >>> u.global_count()
-    3
-
-    Lock & unlock mechanics!
-    >>> u.unlock()
-    Traceback (most recent call last):
-        ...
-    ValueError: Ticker is not locked!
-    >>> u.lock()
-    >>> u.unlock()
-    >>> u.global_count()
-    2
-    >>> u.double_count
-    0
-
-    But hidden variables are no longer accessible!
-    >>> t.count
-    Traceback (most recent call last):
-        ...
-    AttributeError: 'Ticker2' object has no attribute 'count'
-    >>> t._count
-    Traceback (most recent call last):
-        ...
-    AttributeError: 'Ticker2' object has no attribute '_count'
-    >>> t.mutable
-    Traceback (most recent call last):
-        ...
-    AttributeError: 'Ticker2' object has no attribute 'mutable'
-    >>> t.rm_from_global()
-    Traceback (most recent call last):
-        ...
-    AttributeError: 'Ticker2' object has no attribute 'rm_from_global'
     """
-
     def __init__(self, *, pself):
         pself.count = 0
         pself.mutable = True
@@ -166,55 +79,7 @@ class Ticker2(metaclass=priv.ScopedMeta, scope=priv.Scope(static={"global_count"
 with priv.Scope(static={"global_count": 0}) as s:
     class Ticker3:
         """
-        Example of a ticker with private variables (using `bind_scope`).
-
-        Everything works as intended. We can increment the ticker.
-        >>> t = Ticker3()
-        >>> t.increment()
-        1
-        >>> t.increment()
-        2
-
-        Properties work.
-        >>> t.double_count
-        4
-
-        The global ticker works.
-        >>> u = Ticker3()
-        >>> u.increment()
-        1
-        >>> u.global_count()
-        3
-
-        Lock & unlock mechanics!
-        >>> u.unlock()
-        Traceback (most recent call last):
-            ...
-        ValueError: Ticker is not locked!
-        >>> u.lock()
-        >>> u.unlock()
-        >>> u.global_count()
-        2
-        >>> u.double_count
-        0
-
-        But hidden variables are no longer accessible!
-        >>> t.count
-        Traceback (most recent call last):
-            ...
-        AttributeError: 'Ticker3' object has no attribute 'count'
-        >>> t._count
-        Traceback (most recent call last):
-            ...
-        AttributeError: 'Ticker3' object has no attribute '_count'
-        >>> t.mutable
-        Traceback (most recent call last):
-            ...
-        AttributeError: 'Ticker3' object has no attribute 'mutable'
-        >>> t.rm_from_global()
-        Traceback (most recent call last):
-            ...
-        AttributeError: 'Ticker3' object has no attribute 'rm_from_global'
+        Example of a ticker with private variables (using `priv.bind_scope`).
         """
 
         @priv.bind_scope(s)
@@ -255,5 +120,120 @@ with priv.Scope(static={"global_count": 0}) as s:
             pself.count = 0
             pself.mutable = True
 
+class TickerTest(unittest.TestCase):
+    def test_nonprivate(self):
+        # incrementing works
+        # private variables are accessible
+        # private properties are accessible
+        t = Ticker()
+        t.increment()
+        t.increment()
+        t.increment()
+        self.assertEqual(t.increment(), 4)
+        self.assertEqual(t.double_count, 8)
+
+        # global count works
+        # private static variables are accessible
+        u = Ticker()
+        u.increment()
+        u.increment()
+        self.assertEqual(u.global_count(), 6)
+
+        # unlock check works
+        with self.assertRaises(ValueError):
+            u.unlock()
+        
+        # lock/unlock works
+        u.lock()
+        u.unlock()
+        self.assertEqual(u.global_count(), 4)
+
+        # variables are still accessible and modifiable
+        t._count = 999
+        t._mutable = False
+        t.unlock()
+        self.assertEqual(t.global_count(), -995)
+
+        # private methods are accessible
+        t._count = 999
+        t._rm_from_global()
+        self.assertEqual(t.global_count(), -1994)
+    
+    def test_scoped_meta(self):
+        # incrementing works
+        # private variables are accessible
+        # private properties are accessible
+        t = Ticker2()
+        t.increment()
+        t.increment()
+        t.increment()
+        self.assertEqual(t.increment(), 4)
+        self.assertEqual(t.double_count, 8)
+
+        # global count works
+        # private static variables are accessible
+        u = Ticker2()
+        u.increment()
+        u.increment()
+        self.assertEqual(u.global_count(), 6)
+
+        # unlock check works
+        with self.assertRaises(ValueError):
+            u.unlock()
+        
+        # lock/unlock works
+        u.lock()
+        u.unlock()
+        self.assertEqual(u.global_count(), 4)
+
+        ######### DIFFERENCE
+
+        # variables are not accessible or modifiable
+        with self.assertRaises(AttributeError): t.count
+        with self.assertRaises(AttributeError): t._count
+        with self.assertRaises(AttributeError): t.pself.count
+        with self.assertRaises(AttributeError): t._mutable
+        with self.assertRaises(AttributeError): t.mutable
+        # private methods are inaccessible
+        with self.assertRaises(AttributeError): t.rm_from_global()
+    
+    def test_scoped_meta(self):
+        # incrementing works
+        # private variables are accessible
+        # private properties are accessible
+        t = Ticker3()
+        t.increment()
+        t.increment()
+        t.increment()
+        self.assertEqual(t.increment(), 4)
+        self.assertEqual(t.double_count, 8)
+
+        # global count works
+        # private static variables are accessible
+        u = Ticker3()
+        u.increment()
+        u.increment()
+        self.assertEqual(u.global_count(), 6)
+
+        # unlock check works
+        with self.assertRaises(ValueError):
+            u.unlock()
+        
+        # lock/unlock works
+        u.lock()
+        u.unlock()
+        self.assertEqual(u.global_count(), 4)
+
+        ######### DIFFERENCE
+        
+        # variables are not accessible or modifiable
+        with self.assertRaises(AttributeError): t.count
+        with self.assertRaises(AttributeError): t._count
+        with self.assertRaises(AttributeError): t.pself.count
+        with self.assertRaises(AttributeError): t._mutable
+        with self.assertRaises(AttributeError): t.mutable
+        # private methods are inaccessible
+        with self.assertRaises(AttributeError): t.rm_from_global()
+
 if __name__ == "__main__":
-    doctest.testmod()
+    unittest.main()
