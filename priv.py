@@ -132,11 +132,9 @@ class _PrivateSentinel:
         self.attr = name
     def __get__(self, obj, objtype=None): raise AttributeError(f"'{objtype.__name__}' object has no attribute '{self.attr}'")
 
-# enable pself for the method
 def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implicit_drop = False):
     """
     Decorator. Expose private variables to this method (through parameter `pself`).
-    Does not work on properties yet.
     """
     oa = scope.access()
     def decorator(o):
@@ -217,10 +215,13 @@ class PrivateMethod:
 
     @property
     def _name(self):
+        """
+        Exposes function's name for non-ScopedMeta classes
+        """
         fn = self.__func__
         if hasattr(fn, "__func__"): return fn.__func__.__name__
         if hasattr(fn, "fget"): return fn.fget.__name__
-        return fn.__name__
+        if hasattr(fn, "__name__"): return fn.__name__
 
     def __get__(self, obj, objtype=None):
         raise TypeError("Cannot use privatemethod outside of scoped classes")
