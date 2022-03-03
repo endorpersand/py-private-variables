@@ -1,6 +1,6 @@
 from collections import ChainMap
 import types
-from typing import Any, Union
+from typing import Any, Callable, Optional, Union
 import inspect
 
 __all__ = ('Scope', 'bind_scope', 'ScopedMeta', 'privatemethod')
@@ -189,24 +189,24 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
             return _PrivateSentinel()
 
         elif isinstance(o, property):
-            np = [o.fget, o.fset, o.fdel, o.__doc__]
-            def a(i):
-                f = np[i]
-                if f is None: return
-                if hasattr(f, "scoped"): return
+            def mapper(f: Optional[Callable]):
+                if f is None: return f
                 if not _kw_in_signature(f, name):
-                    if implicit_drop: return
+                    if implicit_drop: return f
                     else: raise TypeError(f"Function does not provide {name} parameter to override")
-                
+
                 def func(self, *args, **kwargs):
                     values = oa(self)
                     nkwargs = {**kwargs, name: values}
                     return f(self, *args, **nkwargs)
                 func.__name__ = f.__name__
-
-                np[i] = func
-            for i in range(3): a(i)
-            return property(*np)
+            
+                return func
+            
+            return property(
+                *(mapper(getattr(o, a)) for a in ("fget", "fset", "fdel")),
+                doc = o.__doc__
+            )
 
         elif check_valid:
             raise TypeError("Cannot bind scope here")
