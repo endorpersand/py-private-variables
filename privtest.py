@@ -12,6 +12,7 @@ class Ticker:
         if self.mutable: self.count += 1
         return self.count
 
+# clunky method
 with priv.Scope() as s:
     class Ticker2:
         @priv.bind_scope(s)
@@ -27,7 +28,18 @@ with priv.Scope() as s:
         def increment(self, *, pself):
             if pself.mutable: pself.count += 1
             return pself.count
-    
+        
+        @priv.bind_scope(s)
+        @property
+        def x(self, *, pself):
+            return pself.count
+        
+        @priv.privatemethod(s)
+        @classmethod
+        def q(self, *, pself):
+            pass
+
+# better method
 class Ticker3(metaclass=priv.ScopedMeta):
     def __init__(self, *, pself):
         pself.count = 0
@@ -40,6 +52,18 @@ class Ticker3(metaclass=priv.ScopedMeta):
         if pself.mutable: pself.count += 1
         return pself.count
     
+    @priv.privatemethod
+    @property
+    def y(self):
+        return 0
+        
+    @y.setter
+    def y(self, v, *, pself):
+        pself.count = v
+
+    def expose(self, *, pself):
+        return pself
+
     @priv.privatemethod
     def double_count(self, *, pself):
         return pself.count * 2
