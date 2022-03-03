@@ -1,9 +1,10 @@
 from collections import ChainMap
 import types
-from typing import Any, Callable
+from typing import Any, Callable, Union
 import inspect
 
 __all__ = ('Scope', 'bind_scope', 'ScopedMeta', 'privatemethod')
+PythonMethod = Union[types.FunctionType, classmethod, staticmethod, property]
 
 class Scope:
     """
@@ -137,7 +138,7 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
     Decorator. Expose private variables to this method (through parameter `pself`).
     """
     oa = scope.access()
-    def decorator(o):
+    def decorator(o: PythonMethod):
         if isinstance(o, types.FunctionType):
             f = o
             if not _kw_in_signature(f, name):
@@ -210,7 +211,7 @@ class ScopedMeta(type):
         return super(ScopedMeta, cls).__new__(cls, clsname, bases, nattrs)
 
 class PrivateMethod:
-    def __init__(self, fn: "Callable | classmethod | staticmethod | property"):
+    def __init__(self, fn: PythonMethod):
         self.__func__ = fn
 
     @property
@@ -223,14 +224,11 @@ class PrivateMethod:
         if hasattr(fn, "fget"): return fn.fget.__name__
         if hasattr(fn, "__name__"): return fn.__name__
 
-    def __get__(self, obj, objtype=None):
-        raise TypeError("Cannot use privatemethod outside of scoped classes")
-
 # @privatemethod
 # @privatemethod(scope)
 def privatemethod(scope_or_function: "Scope | Callable" = None):
     if isinstance(scope_or_function, Scope):
-        def decorator(fn: "Callable | classmethod | staticmethod | property"):
+        def decorator(fn: PythonMethod):
             pm = PrivateMethod(fn)
             scope_or_function._register_field(pm._name, pm)
             return # it's been registered, destroy the attribute
