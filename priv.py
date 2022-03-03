@@ -76,8 +76,16 @@ class _ScopeVariables:
     """
     Object that provides all the scoped variables as attributes (This instance should NOT be revealed or exposed.)
     """
-    def __init__(self, accessor, dct: dict):
+    def __init__(self, accessor, dct: ChainMap):
+        RESERVED = dict.fromkeys({"static"})
+        if accessor is not None:
+            RESERVED["static"] = _ScopeVariables(None, dct.parents)
+        else:
+            RESERVED["static"] = self
+
         def _get(it):
+            if it in RESERVED: return RESERVED[it]
+
             o = dct[it]
             if isinstance(o, PrivateMethod):
                 return o.__func__.__get__(accessor, type(accessor))
@@ -85,6 +93,8 @@ class _ScopeVariables:
         object.__setattr__(self, "_get", _get)
 
         def _set(it, v):
+            if it in RESERVED: raise ValueError(f"Cannot set {it}")
+
             o = dct.get(it, None)
             if isinstance(o, PrivateMethod) and (s := getattr(o.__func__, "__set__")) is not None:
                 return s(accessor, v)
@@ -93,6 +103,8 @@ class _ScopeVariables:
         object.__setattr__(self, "_set", _set)
 
         def _del(it):
+            if it in RESERVED: raise ValueError(f"Cannot delete {it}")
+
             o = dct.get(it, None)
             if isinstance(o, PrivateMethod) and (d := getattr(o.__func__, "__delete__")) is not None:
                 return d(accessor)
