@@ -9,7 +9,7 @@ class Scope:
     """
     Stores information for private variables
     """
-    def __init__(self, values: dict[str, Any] = None, *, static: dict[str, Any] = None):
+    def __init__(self, fields: dict[str, Any] = None, *, static: dict[str, Any] = None):
         _open = True
         self.is_open = lambda: _open
         
@@ -17,16 +17,16 @@ class Scope:
             nonlocal _open
             _open = False
         self.close = _close
-        if values is None: values = {}
+        if fields is None: fields = {}
         if static is None: static = {}
         _access = {}
 
         # references instance of values that is always open
-        self.access = lambda: self._require_open() and OpenAccess(_access, values, static)
-        def _register_default(k: str, v):
+        self.access = lambda: self._require_open() and OpenAccess(_access, fields, static)
+        def _register_field(k: str, v):
             self._require_open()
-            values[k] = v
-        self._register_default = _register_default
+            fields[k] = v
+        self._register_field = _register_field
 
     def _require_open(self):
         if not self.is_open():
@@ -104,7 +104,7 @@ class _ScopeVariables:
         except KeyError as e:
             raise AttributeError(str(e))
     
-def kw_in_signature(f, name):
+def _kw_in_signature(f, name):
     """
     Check if keyword is valid in the signature
     """
@@ -118,7 +118,7 @@ def _override_kw(fn, **kwargs):
     """
     Creates a function (that isn't a partial) that has overridden some kwargs
     """
-    if all(kw_in_signature(fn, k) for k in kwargs):
+    if all(_kw_in_signature(fn, k) for k in kwargs):
         def func(*args, **kw):
             nkwargs = {**kw, **kwargs}
             return fn(*args, **nkwargs)
@@ -140,7 +140,7 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
     def decorator(o):
         if isinstance(o, types.FunctionType):
             f = o
-            if not kw_in_signature(f, name):
+            if not _kw_in_signature(f, name):
                 if implicit_drop: return o
                 else: raise TypeError(f"Function does not provide {name} parameter to override")
             def func(self, *args, **kwargs):
@@ -151,7 +151,7 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
 
         elif isinstance(o, (classmethod, staticmethod)):
             f = o.__func__
-            if not kw_in_signature(f, name):
+            if not _kw_in_signature(f, name):
                 if implicit_drop: return o
                 else: raise TypeError(f"Function does not provide {name} parameter to override")
             def func(*args, **kwargs):
@@ -162,7 +162,7 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
 
         elif isinstance(o, PrivateMethod):
             if o._name is None: raise ValueError("Could not resolve privatemethod's name")
-            scope._register_default(o._name, o)
+            scope._register_field(o._name, o)
             return _PrivateSentinel()
 
         elif isinstance(o, property):
@@ -171,7 +171,7 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
                 f = np[i]
                 if f is None: return
                 if hasattr(f, "scoped"): return
-                if not kw_in_signature(f, name):
+                if not _kw_in_signature(f, name):
                     if implicit_drop: return
                     else: raise TypeError(f"Function does not provide {name} parameter to override")
                 
@@ -202,7 +202,7 @@ class ScopedMeta(type):
         nattrs = {}
         for k, a in attrs.items():
             if isinstance(a, PrivateMethod):
-                scope._register_default(k, a)
+                scope._register_field(k, a)
                 continue
 
             d = dec(a)
@@ -232,7 +232,7 @@ def privatemethod(scope_or_function: "Scope | Callable" = None):
     if isinstance(scope_or_function, Scope):
         def decorator(fn: "Callable | classmethod | staticmethod | property"):
             pm = PrivateMethod(fn)
-            scope_or_function._register_default(pm._name, pm)
+            scope_or_function._register_field(pm._name, pm)
             return # it's been registered, destroy the attribute
         return decorator
     
