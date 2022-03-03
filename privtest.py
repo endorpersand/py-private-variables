@@ -197,7 +197,7 @@ class TickerTest(unittest.TestCase):
         # private methods are inaccessible
         with self.assertRaises(AttributeError): t.rm_from_global()
     
-    def test_scoped_meta(self):
+    def test_scoped_bind(self):
         # incrementing works
         # private variables are accessible
         # private properties are accessible
