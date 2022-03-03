@@ -27,18 +27,23 @@ class Scope:
         def _register_field(k: str, v):
             self._require_open()
             fields[k] = v
+
+        bind = bind_scope(self)
+        def _register_pmethod(fn: PythonMethod, name: str = None):
+            self._require_open()
+            p = PrivateMethod(bind(fn))
+            _register_field(name or p._name, p)
+
         self._register_field = _register_field
+        self._register_pmethod = _register_pmethod
 
     def _require_open(self):
         if not self.is_open():
             raise TypeError("Cannot access a closed scope")
         return True
 
-    def __getitem__(self, k):
-        return getattr(self.access()(None), k)
-    
-    def __setitem__(self, k, v):
-        setattr(self.access()(None), k, v)
+    def static(self):
+        return self.access()(None)
     
     def __enter__(self):
         return self
@@ -53,13 +58,13 @@ class Scope:
 
 class OpenAccess:
     """
-    Gives full access to scope forever (and should NOT be revealed or exposed)
+    Gives full access to scope forever (This instance should NOT be revealed or exposed.)
     """
     def __init__(self, _access: dict[int, dict], values: dict[str, Any], static: dict[str, Any]):
         _base = ChainMap(static)
         
         def make_vars(accessor):
-            if accessor is None: return _base
+            if accessor is None: return _ScopeVariables(None, _base)
             cm = _base.new_child(values)
             return _access.setdefault(id(accessor), _ScopeVariables(accessor, cm))
         self._vars = make_vars
@@ -69,13 +74,13 @@ class OpenAccess:
 
 class _ScopeVariables:
     """
-    Converts __getattribute__ and __setattribute__ calls to __getitem__ and __setitem__
+    Object that provides all the scoped variables as attributes (This instance should NOT be revealed or exposed.)
     """
     def __init__(self, accessor, dct: dict):
         def _get(it):
             o = dct[it]
             if isinstance(o, PrivateMethod):
-                return _override_kw(o.__func__.__get__(accessor, type(accessor)), pself=self)
+                return o.__func__.__get__(accessor, type(accessor))
             return o
         object.__setattr__(self, "_get", _get)
 
@@ -91,19 +96,22 @@ class _ScopeVariables:
         try:
             return object.__getattribute__(self, "_get")(i)
         except KeyError as e:
-            raise AttributeError(str(e))
+            err = AttributeError(f"{str(e)}")
+            raise err.with_traceback(None) from None
     
     def __setattr__(self, i, v):
         try:
             return object.__getattribute__(self, "_set")(i, v)
         except KeyError as e:
-            raise AttributeError(str(e))
+            err = AttributeError(f"{str(e)}")
+            raise err.with_traceback(None) from None
     
     def __delattr__(self, i):
         try:
             return object.__getattribute__(self, "_del")(i)
         except KeyError as e:
-            raise AttributeError(str(e))
+            err = AttributeError(f"{str(e)}")
+            raise err.with_traceback(None) from None
     
 def _kw_in_signature(f, name):
     """
@@ -115,23 +123,14 @@ def _kw_in_signature(f, name):
         return False
     return True
 
-def _override_kw(fn, **kwargs):
-    """
-    Creates a function (that isn't a partial) that has overridden some kwargs
-    """
-    if all(_kw_in_signature(fn, k) for k in kwargs):
-        def func(*args, **kw):
-            nkwargs = {**kw, **kwargs}
-            return fn(*args, **nkwargs)
-        return func
-    return fn
-
 class _PrivateSentinel:
     def __repr__(self): return "PRIVATE"
 
     def __set_name__(self, o, name):
         self.attr = name
-    def __get__(self, obj, objtype=None): raise AttributeError(f"'{objtype.__name__}' object has no attribute '{self.attr}'")
+    def __get__(self, obj, objtype=None): 
+        err = AttributeError(f"'{objtype.__name__}' object has no attribute '{self.attr}'")
+        raise err.with_traceback(None) from None
 
 def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implicit_drop = False):
     """
@@ -144,10 +143,22 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
             if not _kw_in_signature(f, name):
                 if implicit_drop: return o
                 else: raise TypeError(f"Function does not provide {name} parameter to override")
+            
             def func(self, *args, **kwargs):
-                values = oa(self)
+                # check whether function is a method or just a function
+                met = getattr(self, f.__name__, None)
+                orig = getattr(met, "__func__", None)
+
+                if orig is func: # method
+                    accessor = self
+                else: # func
+                    accessor = None
+
+                values = oa(accessor)
                 nkwargs = {**kwargs, name: values}
                 return f(self, *args, **nkwargs)
+            func.__name__ = f.__name__
+            
             return func
 
         elif isinstance(o, (classmethod, staticmethod)):
@@ -155,15 +166,18 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
             if not _kw_in_signature(f, name):
                 if implicit_drop: return o
                 else: raise TypeError(f"Function does not provide {name} parameter to override")
+            
             def func(*args, **kwargs):
                 values = oa(None)
                 nkwargs = {**kwargs, name: values}
                 return f(*args, **nkwargs)
+            func.__name__ = f.__name__
+            
             return type(o)(func)
 
         elif isinstance(o, PrivateMethod):
             if o._name is None: raise ValueError("Could not resolve privatemethod's name")
-            scope._register_field(o._name, o)
+            scope._register_pmethod(o.__func__, o._name)
             return _PrivateSentinel()
 
         elif isinstance(o, property):
@@ -180,6 +194,8 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
                     values = oa(self)
                     nkwargs = {**kwargs, name: values}
                     return f(self, *args, **nkwargs)
+                func.__name__ = f.__name__
+
                 np[i] = func
             for i in range(3): a(i)
             return property(*np)
@@ -203,7 +219,7 @@ class ScopedMeta(type):
         nattrs = {}
         for k, a in attrs.items():
             if isinstance(a, PrivateMethod):
-                scope._register_field(k, a)
+                scope._register_pmethod(a.__func__, name=k)
                 continue
 
             d = dec(a)
@@ -229,9 +245,7 @@ class PrivateMethod:
 def privatemethod(scope_or_function: "Scope | Callable" = None):
     if isinstance(scope_or_function, Scope):
         def decorator(fn: PythonMethod):
-            pm = PrivateMethod(fn)
-            scope_or_function._register_field(pm._name, pm)
-            return # it's been registered, destroy the attribute
+            scope_or_function._register_pmethod(fn)
+            return _PrivateSentinel()
         return decorator
-    
     return PrivateMethod(scope_or_function)
