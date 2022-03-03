@@ -86,7 +86,6 @@ class _ScopeVariables:
 
         def _set(it, v):
             o = dct.get(it, None)
-            print(o)
             if isinstance(o, PrivateMethod) and (s := getattr(o.__func__, "__set__")) is not None:
                 return s(accessor, v)
             dct[it] = v
@@ -153,14 +152,15 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
                 else: raise TypeError(f"Function does not provide {name} parameter to override")
             
             def func(self, *args, **kwargs):
-                # check whether function is a method or just a function
-                met = getattr(self, f.__name__, None)
-                orig = getattr(met, "__func__", None)
+                # # check whether function is a method or just a function
+                # met = getattr(self, f.__name__, None)
+                # orig = getattr(met, "__func__", None)
 
-                if orig is func: # method
-                    accessor = self
-                else: # func
-                    accessor = None
+                # if orig is func: # method
+                #     accessor = self
+                # else: # func
+                #     accessor = None
+                accessor = self
 
                 values = oa(accessor)
                 nkwargs = {**kwargs, name: values}
