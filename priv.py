@@ -231,7 +231,7 @@ def privatemethod(scope_or_function: "Scope | Callable" = None):
     if isinstance(scope_or_function, Scope):
         def decorator(fn: "Callable | classmethod | staticmethod | property"):
             pm = PrivateMethod(fn)
-            scope_or_function._register_method(pm._name, pm)
+            scope_or_function._register_default(pm._name, pm)
             return # it's been registered, destroy the attribute
         return decorator
     
