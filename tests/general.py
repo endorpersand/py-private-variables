@@ -1,5 +1,5 @@
-import priv
 import unittest
+import priv
 
 class Ticker:
     """
