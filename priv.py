@@ -37,9 +37,6 @@ class Scope:
         if not self.is_open():
             raise TypeError("Cannot access a closed scope")
         return True
-
-    def static(self):
-        return self.access()(None)
     
     def __enter__(self):
         return self
@@ -59,23 +56,28 @@ class OpenAccess:
     def __init__(self, _access: dict[int, dict], values: dict[str, Any], static: dict[str, Any]):
         _base = ChainMap(static)
         
-        def make_vars(accessor):
-            if accessor is None: return _ScopeVariables(None, _base)
+        def make_static(accessor, ty):
+            return _ScopeVariables(_base, None, ty)
+        def make_vars(accessor, ty):
+            if accessor is None: return make_static(None, ty)
+
             cm = _base.new_child(values)
-            return _access.setdefault(id(accessor), _ScopeVariables(accessor, cm))
+            return _access.setdefault(id(accessor), _ScopeVariables(cm, accessor, ty))
+
         self._vars = make_vars
+        self.static = make_static
     
-    def __call__(self, accessor):
-        return self._vars(accessor)
+    def __call__(self, accessor, ty):
+        return self._vars(accessor, ty)
 
 class _ScopeVariables:
     """
     Object that provides all the scoped variables as attributes (This instance should NOT be revealed or exposed.)
     """
-    def __init__(self, accessor, dct: ChainMap):
+    def __init__(self, dct: ChainMap, accessor, ty):
         RESERVED = dict.fromkeys({"static"})
-        if accessor is not None:
-            RESERVED["static"] = _ScopeVariables(None, dct.parents)
+        if len(dct.maps) > 1:
+            RESERVED["static"] = _ScopeVariables(ChainMap(dct.maps[-1]), None, ty)
         else:
             RESERVED["static"] = self
 
@@ -84,7 +86,7 @@ class _ScopeVariables:
 
             o = dct[it]
             if isinstance(o, PrivateMethod):
-                return o.__func__.__get__(accessor, type(accessor))
+                return o.__func__.__get__(accessor, ty)
             return o
         object.__setattr__(self, "_get", _get)
 
@@ -147,16 +149,13 @@ class _PrivateSentinel:
         err = AttributeError(f"'{objtype.__name__}' object has no attribute '{self.attr}'")
         raise err.with_traceback(None) from None
 
-def _bind_static_to_met(scope: Scope, o: PythonMethod, name: str = "pself", *, check_valid = True, implicit_drop = False):
+def _bind_pself_to_met(o: PythonMethod, values: _ScopeVariables, name: str = "pself", *, check_valid = True, implicit_drop = False):
     """
-    Decorator. Expose private variables to this method (through parameter `pself`).
+    Expose private variables to this method (through parameter `pself`).
     """
-    values = scope.static()
-    pself_kwargs = {name: values}
-
     def _with_pself(f):
         def func(*args, **kwargs):
-            nkwargs = {**kwargs, **pself_kwargs}
+            nkwargs = {**kwargs, **{name: values}}
             return f(*args, **nkwargs)
         func.__name__ = f.__name__
     
@@ -175,7 +174,7 @@ def _bind_static_to_met(scope: Scope, o: PythonMethod, name: str = "pself", *, c
             if implicit_drop: return o
             else: raise TypeError(f"Function does not provide {name} parameter to override")
         
-        nf = _bind_static_to_met(scope, f, name, check_valid=check_valid, implicit_drop=implicit_drop)
+        nf = _bind_pself_to_met(f, values, name, check_valid=check_valid, implicit_drop=implicit_drop)
         return classmethod(nf)
 
     elif isinstance(o, staticmethod):
@@ -185,12 +184,6 @@ def _bind_static_to_met(scope: Scope, o: PythonMethod, name: str = "pself", *, c
             else: raise TypeError(f"Function does not provide {name} parameter to override")
         
         return staticmethod(_with_pself(f))
-
-    elif isinstance(o, PrivateMethod):
-        # idk what to do here tbh
-        if o._name is None: raise ValueError("Could not resolve privatemethod's name")
-        scope._register_pmethod(o.__func__, o._name)
-        return _PrivateSentinel()
 
     elif isinstance(o, property):
         def mapper(f: Optional[Callable]):
@@ -234,15 +227,41 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
                 #     accessor = None
                 accessor = self
 
-                values = oa(accessor)
+                values = oa(accessor, type(accessor))
                 nkwargs = {**kwargs, name: values}
                 return f(self, *args, **nkwargs)
             func.__name__ = f.__name__
             
             return func
 
-        elif isinstance(o, (classmethod, staticmethod)):
-            return _bind_static_to_met(scope, o, name, check_valid=check_valid, implicit_drop=implicit_drop)
+        elif isinstance(o, classmethod):
+            f = o.__func__
+            if callable(f) and not _kw_in_signature(f, name):
+                if implicit_drop: return o
+                else: raise TypeError(f"Function does not provide {name} parameter to override")
+            
+            class func:
+                def __get__(self, cls, clsty = None):
+                    values = oa(None, cls)
+                    b = _bind_pself_to_met(f, values, name, check_valid=check_valid, implicit_drop=implicit_drop)
+                    return b.__get__(cls, clsty)
+            if hasattr(f, "__name__"): func.__name__ = f.__name__
+
+            return classmethod(func())
+        
+        elif isinstance(o, staticmethod):
+            f = o.__func__
+            if callable(f) and not _kw_in_signature(f, name):
+                if implicit_drop: return o
+                else: raise TypeError(f"Function does not provide {name} parameter to override")
+            
+            def func(*args, **kwargs):
+                values = oa(None, None)
+                nkwargs = {**kwargs, name: values}
+                return f(*args, **nkwargs)
+            func.__name__ = f.__name__
+            
+            return staticmethod(func)
 
         elif isinstance(o, PrivateMethod):
             if o._name is None: raise ValueError("Could not resolve privatemethod's name")
@@ -257,7 +276,7 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
                     else: raise TypeError(f"Function does not provide {name} parameter to override")
 
                 def func(self, *args, **kwargs):
-                    values = oa(self)
+                    values = oa(self, type(self))
                     nkwargs = {**kwargs, name: values}
                     return f(self, *args, **nkwargs)
                 func.__name__ = f.__name__
