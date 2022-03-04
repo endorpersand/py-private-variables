@@ -24,17 +24,13 @@ class Scope:
 
         # references instance of values that is always open
         self.access = lambda: self._require_open() and OpenAccess(_access, fields, static)
-        def _register_field(k: str, v):
-            self._require_open()
-            fields[k] = v
 
         bind = bind_scope(self, implicit_drop=True)
         def _register_pmethod(fn: PythonMethod, name: str = None):
             self._require_open()
             p = PrivateMethod(bind(fn))
-            _register_field(name or p._name, p)
+            static[name or p._name] = p
 
-        self._register_field = _register_field
         self._register_pmethod = _register_pmethod
 
     def _require_open(self):
