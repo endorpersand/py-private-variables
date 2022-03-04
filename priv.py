@@ -96,7 +96,7 @@ class _ScopeVariables:
             if it in RESERVED: raise ValueError(f"Cannot set {it}")
 
             o = dct.get(it, None)
-            if isinstance(o, PrivateMethod) and (s := getattr(o.__func__, "__set__")) is not None:
+            if isinstance(o, PrivateMethod) and (s := getattr(o.__func__, "__set__", None)) is not None:
                 return s(accessor, v)
             dct[it] = v
 
@@ -106,7 +106,7 @@ class _ScopeVariables:
             if it in RESERVED: raise ValueError(f"Cannot delete {it}")
 
             o = dct.get(it, None)
-            if isinstance(o, PrivateMethod) and (d := getattr(o.__func__, "__delete__")) is not None:
+            if isinstance(o, PrivateMethod) and (d := getattr(o.__func__, "__delete__", None)) is not None:
                 return d(accessor)
             del dct[it]
         object.__setattr__(self, "_del", _del)
@@ -151,6 +151,72 @@ class _PrivateSentinel:
         err = AttributeError(f"'{objtype.__name__}' object has no attribute '{self.attr}'")
         raise err.with_traceback(None) from None
 
+def _bind_static_to_met(scope: Scope, o: PythonMethod, name: str = "pself", *, check_valid = True, implicit_drop = False):
+    """
+    Decorator. Expose private variables to this method (through parameter `pself`).
+    """
+    values = scope.static()
+    pself_kwargs = {name: values}
+
+    def _with_pself(f):
+        def func(*args, **kwargs):
+            nkwargs = {**kwargs, **pself_kwargs}
+            return f(*args, **nkwargs)
+        func.__name__ = f.__name__
+    
+        return func
+
+    if isinstance(o, types.FunctionType):
+        f = o
+        if not _kw_in_signature(f, name):
+            if implicit_drop: return o
+            else: raise TypeError(f"Function does not provide {name} parameter to override")
+        return _with_pself(f)
+
+    elif isinstance(o, classmethod):
+        f = o.__func__
+        if callable(f) and not _kw_in_signature(f, name):
+            if implicit_drop: return o
+            else: raise TypeError(f"Function does not provide {name} parameter to override")
+        
+        nf = _bind_static_to_met(scope, f, name, check_valid=check_valid, implicit_drop=implicit_drop)
+        print(f"call {f}")
+        return classmethod(nf)
+
+    elif isinstance(o, staticmethod):
+        f = o.__func__
+        if not _kw_in_signature(f, name):
+            if implicit_drop: return o
+            else: raise TypeError(f"Function does not provide {name} parameter to override")
+        
+        return staticmethod(_with_pself(f))
+
+    elif isinstance(o, PrivateMethod):
+        # idk what to do here tbh
+        if o._name is None: raise ValueError("Could not resolve privatemethod's name")
+        scope._register_pmethod(o.__func__, o._name)
+        return _PrivateSentinel()
+
+    elif isinstance(o, property):
+        def mapper(f: Optional[Callable]):
+            print(f"hello {f}")
+            if f is None: return f
+            if not _kw_in_signature(f, name):
+                if implicit_drop: return f
+                else: raise TypeError(f"Function does not provide {name} parameter to override")
+            return _with_pself(f)
+        
+        return property(
+            *(mapper(getattr(o, a)) for a in ("fget", "fset", "fdel")),
+            doc = o.__doc__
+        )
+
+    elif check_valid:
+        raise TypeError("Cannot bind scope here")
+
+    else:
+        return o
+
 def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implicit_drop = False):
     """
     Decorator. Expose private variables to this method (through parameter `pself`).
@@ -182,18 +248,7 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
             return func
 
         elif isinstance(o, (classmethod, staticmethod)):
-            f = o.__func__
-            if not _kw_in_signature(f, name):
-                if implicit_drop: return o
-                else: raise TypeError(f"Function does not provide {name} parameter to override")
-            
-            def func(*args, **kwargs):
-                values = oa(None)
-                nkwargs = {**kwargs, name: values}
-                return f(*args, **nkwargs)
-            func.__name__ = f.__name__
-            
-            return type(o)(func)
+            return _bind_static_to_met(scope, o, name, check_valid=check_valid, implicit_drop=implicit_drop)
 
         elif isinstance(o, PrivateMethod):
             if o._name is None: raise ValueError("Could not resolve privatemethod's name")
