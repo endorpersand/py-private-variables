@@ -180,7 +180,6 @@ def _bind_static_to_met(scope: Scope, o: PythonMethod, name: str = "pself", *, c
             else: raise TypeError(f"Function does not provide {name} parameter to override")
         
         nf = _bind_static_to_met(scope, f, name, check_valid=check_valid, implicit_drop=implicit_drop)
-        print(f"call {f}")
         return classmethod(nf)
 
     elif isinstance(o, staticmethod):
@@ -199,7 +198,6 @@ def _bind_static_to_met(scope: Scope, o: PythonMethod, name: str = "pself", *, c
 
     elif isinstance(o, property):
         def mapper(f: Optional[Callable]):
-            print(f"hello {f}")
             if f is None: return f
             if not _kw_in_signature(f, name):
                 if implicit_drop: return f
