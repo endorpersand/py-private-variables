@@ -39,86 +39,88 @@ class Ticker:
         self._count = 0
         self._mutable = True
 
-class Ticker2(metaclass=priv.ScopedMeta, scope=priv.Scope(static={"global_count": 0})):
+class Ticker2(metaclass=priv.ScopedMeta):
     """
     Example of a ticker with private variables (using `priv.ScopedMeta`).
     """
-    def __init__(self, *, pself):
-        pself.count = 0
-        pself.mutable = True
+
+    @priv.privatestatics
+    class _:
+        global_count = 0
+
+    def __init__(self, *, priv):
+        priv(self).count = 0
+        priv(self).mutable = True
     
-    def lock(self, *, pself):
-        pself.mutable = False
+    def lock(self, *, priv):
+        priv(self).mutable = False
     
-    def increment(self, *, pself):
-        if pself.mutable: 
-            pself.count += 1
-            pself.static.global_count += 1
-        return pself.count
+    def increment(self, *, priv):
+        if priv(self).mutable: 
+            priv(self).count += 1
+            priv(Ticker2).global_count += 1
+        return priv(self).count
 
     @property
-    def double_count(self, *, pself):
-        return pself.count * 2
+    def double_count(self, *, priv):
+        return priv(self).count * 2
     
     @classmethod
-    def global_count(cls, *, pself):
-        return pself.static.global_count
+    def global_count(cls, *, priv):
+        return priv(cls).global_count
     
     @priv.privatemethod
-    def rm_from_global(self, *, pself):
-        pself.static.global_count -= pself.count
+    def rm_from_global(self, *, priv):
+        priv(Ticker2).global_count -= priv(self).count
     
-    def unlock(self, *, pself):
-        if pself.mutable: raise ValueError("Ticker is not locked!")
+    def unlock(self, *, priv):
+        if priv(self).mutable: raise ValueError("Ticker is not locked!")
 
-        pself.rm_from_global()
-        pself.count = 0
-        pself.mutable = True
+        priv(self).rm_from_global()
+        priv(self).count = 0
+        priv(self).mutable = True
 
-# clunky method
-with priv.Scope(static={"global_count": 0}) as s:
-    class Ticker3:
-        """
-        Example of a ticker with private variables (using `priv.bind_scope`).
-        """
+# with static variables!
+with priv.Scope() as s:
+    @s.statics
+    class _:
+        global_count = 0
 
-        @priv.bind_scope(s)
-        def __init__(self, *, pself):
-            pself.count = 0
-            pself.mutable = True
+    class Ticker3(metaclass=priv.ScopedMeta, scope=s):
+        def __init__(self, *, priv):
+            priv(self).count = 0
+            priv(self).mutable = True
         
-        @priv.bind_scope(s)
-        def lock(self, *, pself):
-            pself.mutable = False
+        def lock(self, *, priv):
+            priv(self).mutable = False
         
-        @priv.bind_scope(s)
-        def increment(self, *, pself):
-            if pself.mutable: 
-                pself.count += 1
-                pself.static.global_count += 1
-            return pself.count
+        def increment(self, *, priv):
+            if priv(self).mutable: 
+                priv(self).count += 1
+                priv().global_count += 1
+            return priv(self).count
 
-        @priv.bind_scope(s)
         @property
-        def double_count(self, *, pself):
-            return pself.count * 2
+        def double_count(self, *, priv):
+            return priv(self).count * 2
         
-        @priv.bind_scope(s)
         @classmethod
-        def global_count(cls, *, pself):
-            return pself.static.global_count
+        def global_count(cls, *, priv):
+            return priv().global_count
         
-        @priv.privatemethod(s)
-        def rm_from_global(self, *, pself):
-            pself.static.global_count -= pself.count
+        @priv.privatemethod
+        def rm_from_global(self, *, priv):
+            priv().global_count -= priv(self).count
         
-        @priv.bind_scope(s)
-        def unlock(self, *, pself):
-            if pself.mutable: raise ValueError("Ticker is not locked!")
+        def unlock(self, *, priv):
+            if priv(self).mutable: raise ValueError("Ticker is not locked!")
 
-            pself.rm_from_global()
-            pself.count = 0
-            pself.mutable = True
+            priv(self).rm_from_global()
+            priv(self).count = 0
+            priv(self).mutable = True
+        
+        def __eq__(self, other, *, priv):
+            return priv(self).count == priv(other).count
 
 class TickerTest(unittest.TestCase):
     def test_nonprivate(self):
@@ -197,11 +199,16 @@ class TickerTest(unittest.TestCase):
         # private methods are inaccessible
         with self.assertRaises(AttributeError): t.rm_from_global()
     
-    def test_scoped_bind(self):
+    def test_scoped_meta_static(self):
+        # eq check works
+        t = Ticker3()
+        u = Ticker3()
+
+        self.assertEqual(t, u)
+
         # incrementing works
         # private variables are accessible
         # private properties are accessible
-        t = Ticker3()
         t.increment()
         t.increment()
         t.increment()
@@ -210,7 +217,6 @@ class TickerTest(unittest.TestCase):
 
         # global count works
         # private static variables are accessible
-        u = Ticker3()
         u.increment()
         u.increment()
         self.assertEqual(u.global_count(), 6)

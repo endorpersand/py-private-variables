@@ -1,37 +1,57 @@
 from collections import ChainMap
 import types
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, MutableMapping, Optional, TypeVar, Union
 import inspect
 
-__all__ = ('Scope', 'bind_scope', 'ScopedMeta', 'privatemethod')
+__all__ = ('Scope', 'register', 'static_of', 'bind_access', 'ScopedMeta', 'privatestatics', 'privatemethod')
 PythonMethod = Union[types.FunctionType, classmethod, staticmethod, property]
+C = TypeVar("C", bound=Callable)
 
 class Scope:
     """
-    Stores information for private variables
+    This object acts as a key into the private scope.
+    Scopes are open and the internals are freely accessible until `scope.close()` is called.
+        - Alternatively, `with Scope() as s: ...` can be used to automatically close the scope 
+        at the end of the block.
+    
+    - To register items statically into the scope, `declare`, `register`, `static_of` should be used.
+    - To allow functions to reference items in the scope, `bind_access` should be used.
+    - Classes
+        - `ScopedMeta` to enable class private features
+        - `privatemethod` (in `ScopedMeta` classes) to declare private methods
+        - `privatestatics` (in `ScopedMeta` classes) to declare private class variables
+        - All methods (in `ScopedMeta` classes) can reference items in the scope without `bind_access`.
+    
+    - Functions with scope access (either because they are a method in `ScopedMeta` or because they 
+    have been `bind_access`'d can access scope variables through `priv(ctx)`. 
+    See `bind_access` for more information.)
+    - While a scope is open, variables can be accessed through `scope.priv(ctx)`.
     """
-    def __init__(self, fields: dict[str, Any] = None, *, static: dict[str, Any] = None):
-        _open = True
+
+    def __init__(self, priv_name="priv"):
+        self.priv_name = lambda: priv_name
+
+        _open: bool = True
         self.is_open = lambda: _open
         
         def _close():
             nonlocal _open
             _open = False
         self.close = _close
-        if fields is None: fields = {}
-        if static is None: static = {}
-        _access = {}
-
+        
+        _access = _InternalAccess()
         # references instance of values that is always open
-        self.access = lambda: self._require_open() and OpenAccess(_access, fields, static)
+        self._access = lambda: self._require_open() and _access
 
-        bind = bind_scope(self, implicit_drop=True)
-        def _register_pmethod(fn: PythonMethod, name: str = None):
-            self._require_open()
-            p = PrivateMethod(bind(fn))
-            static[name or p._name] = p
+        # bind = bind_scope(self, implicit_drop=True)
+        # def _register_pmethod(fn: PythonMethod, name: str = None):
+        #     self._require_open()
+        #     p = PrivateMethod(bind(fn))
+        #     static[name or p._name] = p
+        # self._register_pmethod = _register_pmethod
 
-        self._register_pmethod = _register_pmethod
+    def priv(self, ref=None):
+        return self._access()(ref)
 
     def _require_open(self):
         if not self.is_open():
@@ -48,42 +68,64 @@ class Scope:
         if self.is_open():
             return f"<open {self.__class__.__qualname__} at {hex(id(self))}>"
         return f"<closed {self.__class__.__qualname__} at {hex(id(self))}>"
-
-class OpenAccess:
-    """
-    Gives full access to scope forever (This instance should NOT be revealed or exposed.)
-    """
-    def __init__(self, _access: dict[int, dict], values: dict[str, Any], static: dict[str, Any]):
-        _base = ChainMap(static)
-        
-        def make_static(accessor, ty):
-            return _ScopeVariables(_base, None, ty)
-        def make_vars(accessor, ty):
-            if accessor is None: return make_static(None, ty)
-
-            cm = _base.new_child(values)
-            return _access.setdefault(id(accessor), _ScopeVariables(cm, accessor, ty))
-
-        self._vars = make_vars
-        self.static = make_static
     
-    def __call__(self, accessor, ty):
-        return self._vars(accessor, ty)
+    def bind_access(self, *args, **kwargs):
+        """
+        Decorator. See `priv.bind_access(...)`.
+        """
+        return bind_access(self, *args, **kwargs)
+
+    def declare(self, var: str, val):
+        return setattr(self.priv(), var, val)
+    
+    @property
+    def register(self):
+        """
+        Decorator. See `priv.register(...)`.
+        """
+        return register(self)
+    
+    @property
+    def statics(self):
+        """
+        Decorator. See `priv.static_of(...)`.
+        """
+        return static_of(self)
+
+class _InternalAccess:
+    """
+    Free access to variables within the scope. You do NOT want to expose this object.
+    """
+    def __init__(self):
+        self._static: dict[str, Any] = {}
+        self._class:  dict[int, dict[str, Any]] = {}
+        self._inst:   dict[int, dict[str, Any]] = {}
+    
+    def __call__(self, ref: Any = None):
+        use = [self._static]
+
+        if ref is None:
+            accessor = None
+            ty = None
+        elif inspect.isclass(ref):
+            use.append(self._class.setdefault(object.__hash__(ref), {}))
+            accessor = None
+            ty = ref
+        else: 
+            use.append(self._class.setdefault(object.__hash__(type(ref)), {}))
+            use.append(self._inst.setdefault(object.__hash__(ref), {}))
+
+            accessor = ref
+            ty = type(ref)
+        
+        return _ScopeVariables(ChainMap(*reversed(use)), accessor, ty)
 
 class _ScopeVariables:
     """
     Object that provides all the scoped variables as attributes (This instance should NOT be revealed or exposed.)
     """
-    def __init__(self, dct: ChainMap, accessor, ty):
-        RESERVED = dict.fromkeys({"static"})
-        if len(dct.maps) > 1:
-            RESERVED["static"] = _ScopeVariables(ChainMap(dct.maps[-1]), None, ty)
-        else:
-            RESERVED["static"] = self
-
+    def __init__(self, dct: MutableMapping, accessor, ty):
         def _get(it):
-            if it in RESERVED: return RESERVED[it]
-
             o = dct[it]
             if isinstance(o, PrivateMethod):
                 return o.__func__.__get__(accessor, ty)
@@ -91,18 +133,13 @@ class _ScopeVariables:
         object.__setattr__(self, "_get", _get)
 
         def _set(it, v):
-            if it in RESERVED: raise ValueError(f"Cannot set {it}")
-
             o = dct.get(it, None)
             if isinstance(o, PrivateMethod) and (s := getattr(o.__func__, "__set__", None)) is not None:
                 return s(accessor, v)
             dct[it] = v
-
         object.__setattr__(self, "_set", _set)
 
         def _del(it):
-            if it in RESERVED: raise ValueError(f"Cannot delete {it}")
-
             o = dct.get(it, None)
             if isinstance(o, PrivateMethod) and (d := getattr(o.__func__, "__delete__", None)) is not None:
                 return d(accessor)
@@ -129,7 +166,7 @@ class _ScopeVariables:
         except KeyError as e:
             err = AttributeError(f"{str(e)}")
             raise err.with_traceback(None) from None
-    
+
 def _kw_in_signature(f, name):
     """
     Check if keyword is valid in the signature
@@ -140,148 +177,76 @@ def _kw_in_signature(f, name):
         return False
     return True
 
-class _PrivateSentinel:
-    def __repr__(self): return "PRIVATE"
-
-    def __set_name__(self, o, name):
-        self.attr = name
-    def __get__(self, obj, objtype=None): 
-        err = AttributeError(f"'{objtype.__name__}' object has no attribute '{self.attr}'")
-        raise err.with_traceback(None) from None
-
-def _bind_pself_to_met(o: PythonMethod, values: _ScopeVariables, name: str = "pself", *, check_valid = True, implicit_drop = False):
+def register(scope: Scope):
     """
-    Expose private variables to this method (through parameter `pself`).
+    Decorator. Used to register a private STATIC function or method into the scope. For methods, use `@privatemethod`.
     """
-    def _with_pself(f):
-        def func(*args, **kwargs):
-            nkwargs = {**kwargs, **{name: values}}
-            return f(*args, **nkwargs)
+    def deco(o):
+        scope.declare(o.__name__, o)
+        # destroy the reference.
+    return deco
+
+def static_of(scope: Scope):
+    """
+    Class decorator. Consumes the class and inherits all of the variables and functions into the scope's static.
+    For private class fields, use `@privatestatics`.
+
+    This class should not be written as a regular class (i.e., don't include `self` in functions).
+    Any declarations in the form of `r"__.+"` are ignored.
+    `class _(static_of(scope)): ...`
+    """
+    bind = scope.bind_access(check_valid=False, implicit_drop=True)
+
+    def deco(cls):
+        for k, v in privatestatics(cls).refs.items():
+            scope.declare(k, bind(v))
+    return deco
+
+def bind_access(scope: Scope, *, check_valid = True, implicit_drop = False):
+    """
+    Decorator. Allow a function to access scope internals through a `priv` parameter. This should be above `classmethod`, `property`, and the like.
+
+    The `priv` parameter has 3 versions:
+    - `priv()`: access variables/methods defined within the scope but not within any class
+    - `priv(cls)`: access class variables/methods of `cls`
+    - `priv(self)`: access instance variables/methods of `self`
+
+    Decorator parameters:
+    - `check_valid` (default `true`): Raise error if this decorator was called on an invalid object
+    - `implicit_drop` (default `False`): If false, error when the parameter is missing.
+
+    """
+    name = scope.priv_name()
+    oa = scope._access()
+
+    def add_kw(f: C) -> C:
+        if not _kw_in_signature(f, name):
+            if implicit_drop: return f
+            else: raise TypeError(f"Function does not provide {name} parameter to override")
+        
+        def func(self, *args, **kwargs):
+            nkwargs = {**kwargs, name: oa}
+            return f(self, *args, **nkwargs)
         func.__name__ = f.__name__
-    
+            
         return func
 
-    if isinstance(o, types.FunctionType):
-        f = o
-        if not _kw_in_signature(f, name):
-            if implicit_drop: return o
-            else: raise TypeError(f"Function does not provide {name} parameter to override")
-        return _with_pself(f)
-
-    elif isinstance(o, classmethod):
-        f = o.__func__
-        if callable(f) and not _kw_in_signature(f, name):
-            if implicit_drop: return o
-            else: raise TypeError(f"Function does not provide {name} parameter to override")
-        
-        nf = _bind_pself_to_met(f, values, name, check_valid=check_valid, implicit_drop=implicit_drop)
-        return classmethod(nf)
-
-    elif isinstance(o, staticmethod):
-        f = o.__func__
-        if not _kw_in_signature(f, name):
-            if implicit_drop: return o
-            else: raise TypeError(f"Function does not provide {name} parameter to override")
-        
-        return staticmethod(_with_pself(f))
-
-    elif isinstance(o, property):
-        def mapper(f: Optional[Callable]):
-            if f is None: return f
-            if not _kw_in_signature(f, name):
-                if implicit_drop: return f
-                else: raise TypeError(f"Function does not provide {name} parameter to override")
-            return _with_pself(f)
-        
-        return property(
-            *(mapper(getattr(o, a)) for a in ("fget", "fset", "fdel")),
-            doc = o.__doc__
-        )
-
-    elif check_valid:
-        raise TypeError("Cannot bind scope here")
-
-    else:
-        return o
-
-def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implicit_drop = False):
-    """
-    Decorator. Expose private variables to this method (through parameter `pself`).
-    """
-    oa = scope.access()
     def decorator(o: PythonMethod):
-        if isinstance(o, types.FunctionType):
-            f = o
-            if not _kw_in_signature(f, name):
-                if implicit_drop: return o
-                else: raise TypeError(f"Function does not provide {name} parameter to override")
-            
-            def func(self, *args, **kwargs):
-                # # check whether function is a method or just a function
-                # met = getattr(self, f.__name__, None)
-                # orig = getattr(met, "__func__", None)
+        if callable(o):
+            return add_kw(o)
 
-                # if orig is func: # method
-                #     accessor = self
-                # else: # func
-                #     accessor = None
-                accessor = self
-
-                values = oa(accessor, type(accessor))
-                nkwargs = {**kwargs, name: values}
-                return f(self, *args, **nkwargs)
-            func.__name__ = f.__name__
-            
-            return func
-
-        elif isinstance(o, classmethod):
+        elif isinstance(o, (classmethod, staticmethod)):
             f = o.__func__
-            if callable(f) and not _kw_in_signature(f, name):
-                if implicit_drop: return o
-                else: raise TypeError(f"Function does not provide {name} parameter to override")
-            
-            class func:
-                def __get__(self, cls, clsty = None):
-                    values = oa(None, cls)
-                    b = _bind_pself_to_met(f, values, name, check_valid=check_valid, implicit_drop=implicit_drop)
-                    return b.__get__(cls, clsty)
-            if hasattr(f, "__name__"): func.__name__ = f.__name__
+            cls = type(o)
 
-            return classmethod(func())
+            return cls(add_kw(f))
         
-        elif isinstance(o, staticmethod):
-            f = o.__func__
-            if callable(f) and not _kw_in_signature(f, name):
-                if implicit_drop: return o
-                else: raise TypeError(f"Function does not provide {name} parameter to override")
-            
-            def func(*args, **kwargs):
-                values = oa(None, None)
-                nkwargs = {**kwargs, name: values}
-                return f(*args, **nkwargs)
-            func.__name__ = f.__name__
-            
-            return staticmethod(func)
-
         elif isinstance(o, PrivateMethod):
-            if o._name is None: raise ValueError("Could not resolve privatemethod's name")
-            scope._register_pmethod(o.__func__, o._name)
-            return _PrivateSentinel()
+            return o
 
         elif isinstance(o, property):
             def mapper(f: Optional[Callable]):
-                if f is None: return f
-                if not _kw_in_signature(f, name):
-                    if implicit_drop: return f
-                    else: raise TypeError(f"Function does not provide {name} parameter to override")
-
-                def func(self, *args, **kwargs):
-                    values = oa(self, type(self))
-                    nkwargs = {**kwargs, name: values}
-                    return f(self, *args, **nkwargs)
-                func.__name__ = f.__name__
-            
-                return func
+                return f and add_kw(f)
             
             return property(
                 *(mapper(getattr(o, a)) for a in ("fget", "fset", "fdel")),
@@ -293,31 +258,75 @@ def bind_scope(scope: Scope, name: str = "pself", *, check_valid = True, implici
 
         else:
             return o
+    
     return decorator
+
+### Scoping a class
 
 class ScopedMeta(type):
     """
-    Metaclass that handles private variables, 
-    avoiding need for a scope context manager and bind_scope together.
+    Metaclass that allows a scope to keep track of class and instance private variables
     """
-    def __new__(cls, clsname, bases, attrs, *, scope = None, name="pself"):
+    def __new__(cls, clsname, bases, attrs, *, scope = None):
         if scope is None: scope = Scope()
 
-        dec = bind_scope(scope, name, check_valid=False, implicit_drop=True)
+        # automatically bind access to all attrs
+        bind = bind_access(scope, check_valid=False, implicit_drop=True)
+
         nattrs = {}
+        pm: dict[str, PrivateMethod] = {}
+        pf: dict[str, Any] = {}
+
         for k, a in attrs.items():
             if isinstance(a, PrivateMethod):
-                scope._register_pmethod(a.__func__, name=k)
-                continue
+                pm[k] = a
+            elif isinstance(a, privatestatics):
+                pf.update(a.refs)
+            else: 
+                nattrs[k] = bind(a)
+        
+        c = super(ScopedMeta, cls).__new__(cls, clsname, bases, nattrs)
 
-            d = dec(a)
-            if not isinstance(d, _PrivateSentinel): nattrs[k] = d
-        return super(ScopedMeta, cls).__new__(cls, clsname, bases, nattrs)
+        # register all the private methods
+        priv = scope.priv(c)
+        for k, p in pm.items():
+            setattr(priv, k, p._bs(bind))
+        for k, p in pf.items():
+            setattr(priv, k, bind(p))
+        return c
+
+# @privatestatics
+class privatestatics:
+    """
+    Class decorator. When used on an inner class of a scoped class (one that is metaclassed by `ScopedMeta`), the fields are registered into the scope.
+    If NOT used in a scoped class, these fields will be exposed.
+    """
+    def __init__(self, cls):
+        self.refs = {
+            k: v
+            for k, v in cls.__dict__.items()
+            if not k.startswith("__") and not k.startswith(f"_{cls.__name__}__")
+        }
+
+# @privatemethod
+def privatemethod(f: "PythonMethod"):
+    """
+    Decorator. When used in a scoped class (one that is metaclassed by `ScopedMeta`), the private method is registered into the scope.
+    If NOT used in a scoped class, the function is exposed.
+    """
+    if isinstance(f, property):
+        return PrivateProperty(f)
+
+    return PrivateMethod(f)
 
 class PrivateMethod:
     def __init__(self, fn: PythonMethod):
         self.__func__ = fn
 
+    def _bs(self, bsf):
+        self.__func__ = bsf(self.__func__)
+        return self
+    
     @property
     def _name(self):
         """
@@ -338,17 +347,3 @@ class PrivateProperty(PrivateMethod):
     def deleter(self, fdel):
         p = self.__func__
         return PrivateProperty(property(p.fget, p.fset, fdel, p.__doc__))
-
-# @privatemethod
-# @privatemethod(scope)
-def privatemethod(scope_or_function: "Scope | PythonMethod" = None):
-    if isinstance(scope_or_function, Scope):
-        def decorator(fn: PythonMethod):
-            scope_or_function._register_pmethod(fn)
-            return _PrivateSentinel()
-        return decorator
-
-    if isinstance(scope_or_function, property):
-        return PrivateProperty(scope_or_function)
-
-    return PrivateMethod(scope_or_function)
