@@ -83,7 +83,7 @@ print_sum() # 6
 Private functions implicitly obtain private variable access.
 
 ```py
-with priv.Scope() as s:
+with priv.Scope() as (s, priv):
     @s.statics
     class _:
         a = 1
