@@ -180,7 +180,28 @@ class Raffle(metaclass=priv.ScopedMeta):
         priv(cls).raffle_winners.push(winner)
 ```
 
-Inheritance is borked. Oh well.
+When inheriting from a scoped class, private variables and methods are no longer accessible, but inherited public methods using them still work. (Protected variables and methods, like in C#, do not currently exist.)
+
+```py
+class Counter(metaclass=priv.ScopedMeta):
+    def __init__(self, *, priv):
+        priv(self).counter = 0
+    
+    def increment(self, *, priv):
+        priv(self).counter += 1
+        return priv(self).counter
+
+class DoubleCounter(Counter):
+    def __init__(self):
+        super().__init__()
+    
+    def increment(self):
+        super().increment()
+        return super().increment()
+    
+    def value(self, *, priv):
+        return priv(self).counter # AttributeError
+```
 
 ## Multi-class Private Variables
 
