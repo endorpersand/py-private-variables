@@ -25,7 +25,6 @@ with priv.Scope() as (s, priv):
     def foo():
         print("hello!")
     
-    @s.register
     priv().foo() # hello!
 
 priv().foo() # Err
