@@ -69,6 +69,9 @@ class Scope:
             return f"<open {self.__class__.__qualname__} at {hex(id(self))}>"
         return f"<closed {self.__class__.__qualname__} at {hex(id(self))}>"
     
+    def __iter__(self):
+        return iter((self, self.priv))
+
     def bind_access(self, *args, **kwargs):
         """
         Decorator. See `priv.bind_access(...)`.
@@ -179,9 +182,12 @@ def _kw_in_signature(f, name):
 
 def register(scope: Scope):
     """
-    Decorator. Used to register a private STATIC function or method into the scope. For methods, use `@privatemethod`.
+    Decorator. Used to register a private STATIC function into the scope. For methods within a class, use `@privatemethod`.
+    
+    This decorator cannot be used on a class, because it would not enable truly private classes.
     """
     def deco(o):
+        if inspect.isclass(o): raise TypeError("Cannot use @register decorator on class")
         scope.declare(o.__name__, o)
         # destroy the reference.
     return deco
@@ -224,9 +230,9 @@ def bind_access(scope: Scope, *, check_valid = True, implicit_drop = False):
             if implicit_drop: return f
             else: raise TypeError(f"Function does not provide {name} parameter to override")
         
-        def func(self, *args, **kwargs):
+        def func(*args, **kwargs):
             nkwargs = {**kwargs, name: oa}
-            return f(self, *args, **nkwargs)
+            return f(*args, **nkwargs)
         func.__name__ = f.__name__
             
         return func
